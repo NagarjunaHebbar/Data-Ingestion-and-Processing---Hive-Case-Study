@@ -1,0 +1,556 @@
+﻿-- Hive Case Study: New York City Taxi & Limousine Commission (TLC)
+-- Authors : Venkata Nagarjuna T H , Darpan Shah
+-- The purpose of this dataset is to get a better understanding of the taxi system so that the city of New York can improve the efficiency of
+-- in-city commutes.
+
+---#####################################
+-- Adding the required JAR file to the class path :
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+-- Defining the partition sizes: 
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+-- Creating database to be used for the case study
+CREATE DATABASE if not exists hive_casestudy_VN_DS;
+
+-- using the created database
+USE hive_casestudy_VN_DS;
+
+-- Step 1: Loading the Data
+
+-- Per Assignment the dataset stored in the HDFS storage of the lab and the path is '/common_folder/nyc_taxi_data/'
+-- As mentioned in the assignment, we are considering the integers as int and floating points as double. 
+
+-- Creating External table
+CREATE External TABLE IF NOT EXISTS hive_casestudy_vn_ds.tlc_ny_main(
+VendorID int,
+pickup_time timestamp,
+dropoff_time timestamp,
+passenger_count int,
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PU_LocationID int,
+DO_LocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double
+)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+LOCATION '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1"); 
+-- Skipping the header row
+
+-- Checking the data table whether it is data or not with limit of 10 rows
+Select * from hive_casestudy_vn_ds.tlc_ny_main limit 10;
+
+-- checking the total number of rows 
+SELECT count(*) from hive_casestudy_vn_ds.tlc_ny_main;
+-- Output : 1174569 rows returned from the above query.
+
+-- Step 2: Data Quality Check
+
+-- per Assignment there are some questions about the quality check of the data.
+-- Question 1: How many records has each TPEP provider provided? Write a query that summarises the number of records of each provider.
+
+SELECT  vendorid, count(*) as Number_records, 
+(CASE 
+WHEN vendorid=1 then 'VeriFone Inc.' 
+ELSE 'Creative Mobile Technologies' 
+END) AS Vendor_Name
+FROM hive_casestudy_vn_ds.tlc_ny_main
+GROUP BY vendorid;
+
+-- Output
+-- 
+--  	vendorid	number_records	vendor_name
+-- 1	2	        647183	        Creative Mobile Technologies
+-- 2	1	        527386	        VeriFone Inc.
+
+-- Inferences: 
+-- Vendor 1 : Creative Mobile Technologies: 527385 records
+-- Vendor 2 : VeriFone Inc. : 647183
+-- Around 55% records are from Vendor 2 and rest 45 % will be from Vendor 1.
+
+-- 
+-- Question 2: The data provided is for months November and December only. Check whether the data is consistent, and if not, identify the data quality issues. Mention all data quality issues in comments.
+
+-- From the Data dictionary pickup_time and Dropoff_time means the date and time which means vehicle parked during that time. and the valid time is only between 01 Nov 2017 to 31 Dec 2017.
+-- Hence we can conclude that the invalid trip range will be where 'tpep_pickup_datetime'<01-Nov-2017 and 'tpep_pickup_datetime'>=01-Jan-2018 :
+select  vendorid, count(*) 
+FROM  hive_casestudy_vn_ds.tlc_ny_main
+where pickup_time < '2017-11-1 00:00:00.0' or pickup_time>='2018-01-01 00:00:00.0'
+group by vendorid;
+--  
+-- Output: there are 14 records with the vendor id = 2
+-- 
+
+-- Considering the Dropoff_time 
+
+select  vendorid, count(*) 
+FROM   hive_casestudy_vn_ds.tlc_ny_main
+where dropoff_time < '2017-11-01 00:00:00.0' or dropoff_time>='2018-01-02 00:00:00.0'
+group by vendorid;
+--  
+-- Output
+ -- 	vendorid	_c1
+-- 1	2	        6
+-- 2	1	        1
+
+-- From the above, Vendor ID 2 has 6 inconsistent data and vendor 1 has 1 record.
+-- 
+
+-- Checking the min and max of pickup and drop off time
+select max(dropoff_time) as max_dropTime, min (dropoff_time) as Min_dropTime, max(pickup_time) as max_pickupTime, min(pickup_time) as min_pickupTime
+from hive_casestudy_vn_ds.tlc_ny_main;
+
+--  
+-- Output:
+--  	max_droptime	        min_droptime	        max_pickuptime	        min_pickuptime
+-- 1	2019-04-24 19:21:00.0	2003-01-01 01:28:00.0	2018-01-01 00:04:00.0	2003-01-01 00:58:00.0
+-- 
+-- From the above output, it is clear that data cleaning is required as we asked to analyze between 01/Nov/2017 to 31/12/2017, but the output contains from 2003 to 2019.
+
+-- Checking the dropoff time is equal to pickup time 
+select vendorid, count(*) from hive_casestudy_vn_ds.tlc_ny_main
+where dropoff_time=pickup_time
+group by vendorid;
+
+--  
+-- Output:
+--  	vendorid	_c1
+-- 1	2	        3063
+-- 2	1	        3419
+-- 
+-- From the above, it is looks like there are 3063 records for the vendor 2 has the same drop off and pickup time where as vendor 1 has 3419 records.
+
+-- Considering drop off time is less than pickup time 
+select vendorid, count(*) from hive_casestudy_vn_ds.tlc_ny_main
+where dropoff_time<pickup_time
+group by vendorid;
+--  
+-- Output:
+
+--  	vendorid	_c1
+-- 1	1	        73
+-- 
+-- From the above, there are 73 records where the drop time is less than the pickup time, which is wrong logically, hence we need to take care of this data too.
+
+-- Question 3: You might have encountered unusual or erroneous rows in the dataset. Can you conclude which vendor is doing a bad job in providing the records using different columns of the dataset? Summarise your conclusions based on every column where these errors are present. For example,  There are unusual passenger count, i.e. 0 which is unusual.
+
+-- Considering the passenger_count 
+select passenger_count, count(*) as total_passenger
+from  hive_casestudy_vn_ds.tlc_ny_main 
+group by passenger_count
+order by passenger_count;
+
+-- 
+-- Output:
+-- 
+--  	passenger_count	total_passenger
+-- 1	0	                6824
+-- 2	1	                827499
+-- 3	2	                176872
+-- 4	3	                50693
+-- 5	4	                24951
+-- 6	5	                54568
+-- 7	6               	33146
+-- 8	7	                12
+-- 9	8	                3
+-- 10	9	                1
+-- 
+-- From the above, we can see that passenger count as 0 with 6824 records which is not the case. As a trip it should be atleast one passenger should be present during the trip
+-- Hence we will clean the data in data cleaning.
+
+-- Considering vendor id with the zero passengers count. 
+select  vendorid,count(*)
+from  hive_casestudy_vn_ds.tlc_ny_main 
+where passenger_count<=0 
+group by vendorid;
+
+-- 
+-- Output:
+
+--  	vendorid	_c1
+-- 1	2	        11
+-- 2	1	        6813
+-- 
+-- From the above, vendor 2 has 11 records with zero passengers where as vendor 1 has 6813 records.
+
+-- Considering the trip_distance
+-- Checking the min and Max trip distance
+select min(trip_distance), max(trip_distance) from hive_casestudy_vn_ds.tlc_ny_main;
+-- From the above, the min distance of the trip is 0 miles and max trip distance is 126.41 miles. 
+
+-- Considering the zero trip distance
+select  count(*) 
+FROM hive_casestudy_vn_ds.tlc_ny_main
+where trip_distance<=0;
+
+-- There are 7402 records with the trip distance is 0 and negative trip distance. and we will neglect those records as it contributes very less percentage.
+
+-- Considering the RateCodeID - From the Data dictionary, valid codes for the rateCodeID between 1 to 6.
+select ratecodeid, count(*) 
+from hive_casestudy_vn_ds.tlc_ny_main
+group by ratecodeid
+order by ratecodeid;
+-- There are 9 records with the invalid code id with 99
+
+-- Considering the invalid ratecodeid 99 with the vendor id
+select vendorid , count(*) 
+from  hive_casestudy_vn_ds.tlc_ny_main
+where ratecodeid=99
+group by vendorid;
+
+-- 
+-- Output:
+
+--  	vendorid	_c1
+-- 1	2	        1
+-- 2	1	        8
+-- 
+-- from the above, vendor 1 has more invalid ratecode id.
+
+-- Considering the Payment_type -- From the data dictionary valid codes from 1 to 6
+select Payment_type, count(*) as countPayment
+from  hive_casestudy_vn_ds.tlc_ny_main
+group by Payment_type
+order by Payment_type;
+-- 
+-- Output:
+
+--  	payment_type	countpayment
+-- 1	1	            790256
+-- 2	2	            376374
+-- 3	3	            6274
+-- 4	4	            1665
+-- 
+-- From the above, there is no invalid code in the payment Type.
+
+-- Considering the Fare amount
+select max(fare_amount) as MaxFare, min(fare_amount) as MinFare 
+from hive_casestudy_vn_ds.tlc_ny_main;
+
+--  
+--  Output :
+--  	maxfare	minfare
+-- 1	650	        -200
+-- 
+-- From the above, Max fare seems to be reasonable with the distance and peaktimes but the min fare can not be negative.
+
+-- Considering the vendor id and fare amount with fare amount is less than 0
+select vendorid ,count(*)
+from hive_casestudy_vn_ds.tlc_ny_main
+where fare_amount < 0
+group by vendorid;
+
+-- From the above vendor ID 2 has the sole contributor for negative fare amount. 
+
+-- Considering Tip Amount is greater than total amount
+
+select vendorid,count(*) 
+from hive_casestudy_vn_ds.tlc_ny_main
+where tip_amount > total_amount
+group by vendorid;
+-- From the above, Vendor 2 is having the 558 records in which tip amount is greater than total_amount, Hence we have to remove those records during the data cleaning
+-- We have total 558 such invalid records and belongs to vendor 2, this has asbe removed.
+
+-- From the above, the following inferences can be made:
+-- 1. passenger_count, trip_distance, ratecodeid columns  for Vendor1  - Creative Mobile Technologies - is major contributor for incorrect data
+-- 2. the following columns for vendor 2  - VeriFone Inc. - is a major contributor for incorrect data
+-- Fare_amount
+-- tip_amount
+-- total_amount
+
+-- 3. Vendor 2 is the major source of incorrect data and vendor 1 to coordinate with the taxi partners to get the correct data.
+
+--------------------------------------------------------------------------------------------
+-- ############## Creating Partioned tables and removing the incorrect data #######################
+---------------------------------------------------------------------------------------------
+-- using the database created at the begining
+USE hive_casestudy_vn_ds;
+
+-- IMPORTANT: Before partitioning any table, make sure you run the below commands.
+-- Adding the required JAR file to the class path :
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+
+-- Drop the table if it already exists with same name:
+drop table  hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc;
+
+-- Per Assignment problem, we are using month and year for the partioning 
+
+-- Creating partioned external table 
+
+Create external table if not exists hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc(
+vendorid int,
+pickup_time timestamp,
+dropoff_time timestamp,
+passenger_count int,
+trip_distance double,
+RatecodeID int,
+store_and_fwd_flag string,
+PU_LocationID int,
+DO_LocationID int,
+payment_type int,
+fare_amount double,
+extra double,
+mta_tax double,
+tip_amount double,
+tolls_amount double,
+improvement_surcharge double,
+total_amount double
+)
+partitioned by (yr int, mnth int)
+stored as orc LOCATION '/user/hive/warehouse/ds'
+tblproperties ("orc.compress"="SNAPPY");
+
+-- Inserting data into the partioned table
+insert overwrite table hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc partition(yr,mnth)
+select vendorid, pickup_time, dropoff_time,passenger_count,trip_distance,RatecodeID,
+store_and_fwd_flag,
+PU_LocationID,
+DO_LocationID,
+payment_type,
+fare_amount,
+extra,
+mta_tax,
+tip_amount,
+tolls_amount,
+improvement_surcharge,
+total_amount,
+year(pickup_time) yr,
+month(pickup_time) mnth
+from  hive_casestudy_vn_ds.tlc_ny_main
+where  (pickup_time >='2017-11-1 00:00:00.0' and pickup_time<'2018-01-01 00:00:00.0') and
+(dropoff_time >= '2017-11-1 00:00:00.0' and dropoff_time<'2018-01-02 00:00:00.0') and
+(dropoff_time>pickup_time) and
+(passenger_count >0) and
+(trip_distance>0) and 
+(ratecodeid!=99) and
+(fare_amount>0 ) and
+ (extra in (0,0.5,1)) and
+ (mta_tax  in (0,0.5)) and 
+((tip_amount >=0 and Payment_type=1) or (Payment_type!=1 and tip_amount=0)) and
+(tolls_amount >=0) and
+(improvement_surcharge in (0,0.3)) and
+(total_amount > tip_amount)and
+(total_amount>0);
+
+-- Checking for data in table
+SELECT * FROM hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc LIMIT 10;
+
+-- Checking for total number of records 
+SELECT COUNT(1) FROM hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc;
+-- total number of records - 1153587
+
+-- We have removed 20982 records which is 0.07 %. 
+
+
+--------------------------------------------------------------------------------------------
+-- ############## Analysis  - 1 #######################
+---------------------------------------------------------------------------------------------
+
+-- Question 1 : Compare the overall average fare per trip for November and December:
+
+select mnth,round(avg(total_amount),2) as average_total_amount,round(avg(fare_amount),2) as average_total_fare
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc
+group by mnth;
+
+-- 
+-- Output:
+
+--  	mnth	average_total_amount	average_total_fare
+-- 1	11	        16.19	                12.91
+-- 2	12	        15.89	                12.7
+
+-- Inference: From the above, it is clear that average totalamount and averae total fore is more in November. 
+-- 
+
+-- Question 2 :Explore the ‘number of passengers per trip’ - how many trips are made by each level of ‘Passenger_count’? 
+-- Do most people travel solo or with other people?
+
+select passenger_count,round((count(*)*100/1153587),2) as percentagecount
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc    
+group by passenger_count
+order by percentagecount desc;
+
+-- 
+-- Output:
+
+--  	passenger_count	    percentagecount
+-- 1	1	                70.82
+-- 2	2	                15.15
+-- 3	5	                4.68
+-- 4	3	                4.35
+-- 5	6	                2.85
+-- 6	4	                2.14
+-- 7	7	                0
+
+-- Inference: From the above, single passenger trips accounts 71% and followed by 2 passenger trips 15% 
+-- 
+
+-- Question 3 :Which is the most preferred mode of payment?
+
+select payment_type,
+case 
+when payment_type=1 then 'Credit card'
+when payment_type=2 then 'Cash'
+when payment_type=3 then 'No charge'
+when payment_type=4 then 'Dispute'
+else 'Unknownb'
+end as payment_method
+,round((count(*)*100/1153587),4) as count_percenatge
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc
+group by payment_type
+order by count_percenatge desc;
+
+-- 
+-- Output:
+
+--  	payment_type	payment_method	count_percenatge
+-- 1	1	            Credit card	        67.5418
+-- 2	2	            Cash	            31.9576
+-- 3	3           	No charge	        0.3884
+-- 4	4           	Dispute	            0.1123
+
+-- Inferences: From the above most of the travellers choose credit card as the payment type with 67.5% and followed by cash with 32% 
+-- 
+
+-- Question 4 :What is the average tip paid per trip? Compare the average tip with the 25th, 50th and 75th percentiles and 
+-- comment whether the ‘average tip’ is a representative statistic (of the central tendency) of ‘tip amount paid’. 
+-- Hint: You may use percentile_approx(DOUBLE col, p): Returns an approximate pth percentile of a numeric column 
+-- (including floating point types) in the group.
+
+select round(avg(tip_amount),2)  
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc;
+
+--  
+-- Output:
+-- 1.83 dollars is the average tip paid
+-- 
+
+
+select percentile_approx(tip_amount,array(0.10,0.25,0.50,0.75,0.90))  
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc;
+
+--  
+-- Output:
+-- [0.0,0.0,1.3596549479166669,2.45,4.15]
+
+-- 
+-- Question 5 :Explore the ‘Extra’ (charge) variable - what fraction of total trips have an extra charge is levied?
+
+select extra,round((count(*)*100/1153586),4) as percentCount from (
+select (case when extra>0 then 1 else 0 end) as  extra
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc ) T
+group by extra
+order by percentCount desc;
+
+ 
+-- Output:
+--  	extra	percentcount
+-- 1	0	        53.8546
+-- 2	1	        46.1455
+-- Inferences: From the above there are 46% of the trips are having extra charges.
+
+
+
+-- -----------------------------------------------------------------------------------------
+-- ############## Analysis  - 2 #######################
+-- -------------------------------------------------------------------------------------------
+
+-- Question 1 :What is the correlation between the number of passengers on any given trip, and the tip paid per trip? 
+-- Do multiple travellers tip more compared to solo travellers? Hint: Use CORR(Col_1, Col_2)
+select round(corr(passenger_count, tip_amount),4) 
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc;
+
+-- Output:
+-- -0.053 
+
+select solo,round(avg(tip_amount),4)  from 
+(select (case when passenger_count=1 then 1 else 0 end) as solo,tip_amount 
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc) T 
+group by solo;
+
+-- Output:
+--  	solo	_c1
+-- 1	0	    1.8023
+-- 2	1	    1.8354
+
+-- Inference: From the above, average tip amount with solo traveller and group travlers is almost equal. Hence we can conclude that multiple travelers tip is less than solo travelers.
+
+-- Question 2 :Segregate the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20. 
+-- Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket).
+
+select tipRange, round((count(*)*100/1153586),4) cntPercentage
+from (
+select case when (tip_amount>=0 and tip_amount<5)   then '[0-5)' 
+     when (tip_amount>=5 and tip_amount<10)  then '[5-10)' 
+     when (tip_amount>=10 and tip_amount<15) then '[10-15)'
+     when (tip_amount>=15 and tip_amount<20) then '[15-20)'
+     when (tip_amount>=20)                   then '>=20' end tipRange
+     from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc
+     ) T 
+     group by tipRange
+     order by cntPercentage desc;
+
+
+-- Output:
+
+-- 		tiprange	cntpercentage
+-- 1	[0-5)	    92.4039
+-- 2	[5-10)	    5.638
+-- 3	[10-15)	    1.6829
+-- 4	[15-20)	    0.1872
+-- 5	>=20	    0.0881
+
+-- Inference: From the above, 92% of the tip comes from 0 - 5 dollars.
+
+
+-- Question 3 :Which month has a greater average ‘speed’ - November or December? Note that the variable ‘speed’ will have to be
+-- derived from other metrics. Hint: You have columns for distance and time.
+select mnth , round(avg(trip_distance/((unix_timestamp(dropoff_time)-unix_timestamp(pickup_time) )/3600) ),2) avgSpeed
+from hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc
+group by mnth
+order by avgSpeed desc;
+-- we have divided with the 3600 because we have converted seconds into hours
+--  
+-- Output:
+-- 		mnth	avgspeed
+-- 1	12	    11.07
+-- 2	11	    10.97
+-- Inferences:
+-- From the above, the average speed in the month of november is 10.97 mph where as in the december 11.07 mph. this might be because december is the holiday season 
+
+-- Question 4 :Analyse the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) and 
+-- 25th December (Christmas) and compare it with the overall average. 
+
+SELECT FROM_UNIXTIME(UNIX_TIMESTAMP(pickup_time), 'dd-MMM-yyyy') as HappeningDay, 
+       ROUND(AVG(trip_distance/((UNIX_TIMESTAMP(dropoff_time) - UNIX_TIMESTAMP(pickup_time))/3600)),4) as avgSpeedMph
+FROM hive_casestudy_vn_ds.tlc_ny_main_partitioned_orc
+WHERE trip_distance >= 0
+AND mnth = 12
+AND DAY(pickup_time) IN (25,31)
+AND YEAR(dropoff_time) IN (2017)
+GROUP BY FROM_UNIXTIME(UNIX_TIMESTAMP(pickup_time), 'dd-MMM-yyyy');
+
+-- 
+-- Output:
+
+-- 	happeningday	avgspeedmph
+-- 1	25-Dec-2017	    15.2655
+-- 2	31-Dec-2017	    13.2444
+
+-- Inferences: From the above, Average speed on 25th december is 15.26 mph which is more when compared with 31- Dec 2017 which is 13.24 mph only. 
+
+-- ################# END###############################
